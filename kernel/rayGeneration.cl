@@ -27,8 +27,8 @@ typedef struct Ray {
 
 void createCamRay(Ray* ray, const int x_coord, const int y_coord, const float rngx, const float rngy) {
 
-	float3 uni_view = normalize((float3)(0, 0, 1));
-	float3 uni_eye = (float3)(0.0, 0.68, -2.48);
+	float3 uni_view = normalize((float3)(0, 0, -1));
+	float3 uni_eye = (float3)(0.0f, 2.0f, 5.2f);
 	float3 dx = normalize(cross(uni_view, (float3)(0.0, 1.0, 0.0)));
 	float3 dy = normalize(cross(uni_view, dx));
 	float3 center = uni_eye + uni_view * (float)(width) * 0.5f / tan(60 * 0.00872665274f);
@@ -42,11 +42,12 @@ void createCamRay(Ray* ray, const int x_coord, const int y_coord, const float rn
 }
 
 kernel void generation_kernel(global ray_info* ray_buffer, global long* streamTable, global int* atomicBuffer, const float rngx, const float rngy) {
-	unsigned int work_item_id = get_global_id(0);	/* the unique global id of the work item for the current pixel */
-	unsigned int x_coord = work_item_id % width;	 /*x-coordinate of the pixel */
-	unsigned int y_coord = work_item_id / width;	 /*y-coordinate of the pixel */
+	unsigned int work_item_id = get_global_id(0);
+	unsigned int x_coord = work_item_id % width;
+	unsigned int y_coord = work_item_id / width;
 
-	atomic_store_explicit((global atomic_int*)atomicBuffer, width * height, memory_order_seq_cst);
+	atomic_xchg(atomicBuffer, width * height);
+
 	streamTable[work_item_id] = work_item_id;
 
 	Ray camray;
@@ -56,5 +57,4 @@ kernel void generation_kernel(global ray_info* ray_buffer, global long* streamTa
 	ray_buffer[work_item_id].ori = (float4)(camray.origin, -1);
 	ray_buffer[work_item_id].color = (float4)(1, 1, 1, 0);
 	ray_buffer[work_item_id].hitPoint = (float4)(0, 0, 0, 0);
-
 }

@@ -14,16 +14,16 @@ typedef struct ray_info {
 } ray_info;
 
 typedef struct Triangle {
-	float a[3];
-	float b[3];
-	float c[3];
-	float n[3];
-	float _center[3];
-	float ambient[3];
-	float diffuse[3];
-	float specular[3];
-	float emission[3];
-	float ninsa[3];
+	float3 a;
+	float3 b;
+	float3 c;
+	float3 n;
+	float3 center;
+	float3 ambient;
+	float3 diffuse;
+	float3 specular;
+	float3 emission;
+	float3 ninsa;
 } Triangle;
 
 typedef struct BVH {
@@ -51,11 +51,30 @@ typedef struct Stack {
 
 
 float intersect_BVHtriangle(Triangle triangles, Ray* ray) {
-	/* do triangle intersect */
+	float t = 0.0f;
+
+	float3 v0 = (float3)(triangles.a.x, triangles.a.y, triangles.a.z);
+	float3 v1 = (float3)(triangles.b.x, triangles.b.y, triangles.b.z);
+	float3 v2 = (float3)(triangles.c.x, triangles.c.y, triangles.c.z);
+
+	float3 e1 = v1 - v0;
+	float3 e2 = v2 - v0;
+	float3 x = ray->origin - v0;
+	float3 p = cross(ray->dir, e2);
+	float det = dot(p, e1);
+	t = dot(cross(x, e1), e2) / det;
+	float u = dot(cross(ray->dir, e2), x) / det;
+	float v = dot(cross(x, e1), ray->dir) / det;
+
+	if ((t > 0) && (u >= 0) && (u <= 1) && (v >= 0) && (u + v <= 1)) {
+		return t;
+	}
+
+	return inf;
 }
 
-float intersect_AABB(BVH* BVHtriangles, int index, const Ray* r) {
-	uint id  = index;
+float intersect_AABB(global BVH* BVHtriangles, int index, const Ray* r) {
+	int id  = index;
 	float3 points[2] = { BVHtriangles[id].points[0] - r->origin, BVHtriangles[id].points[1] - r->origin };
 	float3 p1_ = points[0] * r->inv_dir;
 	float3 p2_ = points[1] * r->inv_dir;
@@ -68,7 +87,7 @@ float intersect_AABB(BVH* BVHtriangles, int index, const Ray* r) {
 	return t_low <= t_high ? t_low : -1.0f;
 }
 
-bool intersect_BVHscene(Triangle* triangles, BVH* BVHtriangles, Ray* ray) {
+bool intersect_BVHscene(global Triangle* triangles, global BVH* BVHtriangles, Ray* ray) {
 	bool hit = false;
 	ray->t = inf;
 
@@ -103,7 +122,8 @@ bool intersect_BVHscene(Triangle* triangles, BVH* BVHtriangles, Ray* ray) {
 					}
 
 					for (int i = 0; i < tricount; i++) {
-						hitdistance = intersect_BVHtriangle(triangles[triIndex[i]], ray);
+						int triListIndex =  triIndex[i];
+						hitdistance = intersect_BVHtriangle(triangles[triListIndex], ray);
 						
 						if (hitdistance != inf && hitdistance < ray->t) {
 							ray->t = hitdistance;
@@ -164,7 +184,7 @@ bool intersect_BVHscene(Triangle* triangles, BVH* BVHtriangles, Ray* ray) {
 	return hit; 
 }
 
-void BVHtrace(Triangle* triangles, BVH* BVHtriangles, Ray* ray) {	
+void BVHtrace(global Triangle* triangles, global BVH* BVHtriangles, Ray* ray) {	
 	bool hit = intersect_BVHscene(triangles, BVHtriangles, ray);
 	
 	if (hit) {
@@ -173,23 +193,22 @@ void BVHtrace(Triangle* triangles, BVH* BVHtriangles, Ray* ray) {
 }
 
 kernel void traversal_kernel(global Triangle* triangles, global BVH* BVHtriangles, global long* streamTable, int NDcounter, global ray_info* ray_buffer) {
-	unsigned int work_item_id = get_global_id(0);	 /*the unique global id of the work item for the current pixel */
-	unsigned int x_coord = work_item_id % width;	 /*x-coordinate of the pixel */
-	unsigned int y_coord = work_item_id / width;	 /*y-coordinate of the pixel */
+	unsigned int work_item_id = get_global_id(0);
+	unsigned int x_coord = work_item_id % width;
+	unsigned int y_coord = work_item_id / width;
 
 	if (work_item_id < NDcounter) {
-
 		int ray_id = streamTable[work_item_id];
 
 		Ray ray;
-		ray.origin = (float3)(ray_buffer[ray_id].ori[0], ray_buffer[ray_id].ori[1], ray_buffer[ray_id].ori[2]);
-		ray.dir = (float3)(ray_buffer[ray_id].dir[0], ray_buffer[ray_id].dir[1], ray_buffer[ray_id].dir[2]);
-		ray.inv_dir = (float3)(1 / ray.dir[0], 1 / ray.dir[1], 1 / ray.dir[2]);
-		ray.si0 = ray.inv_dir[0] < 0;
-		ray.si1 = ray.inv_dir[1] < 0;
-		ray.si2 = ray.inv_dir[2] < 0;
+		ray.origin = (float3)(ray_buffer[ray_id].ori.xyz);
+		ray.dir = (float3)(ray_buffer[ray_id].dir.xyz);
+		ray.inv_dir = (float3)(1 / ray.dir.x, 1 / ray.dir.y, 1 / ray.dir.z);
+		ray.si0 = ray.inv_dir.x < 0;
+		ray.si1 = ray.inv_dir.y < 0;
+		ray.si2 = ray.inv_dir.z < 0;
 		ray.hitTriID = -1.0f;
-		ray.depth = ray_buffer[ray_id].dir[3];
+		ray.depth = ray_buffer[ray_id].dir.w;
 		
 		BVHtrace(triangles, BVHtriangles, &ray);
 		

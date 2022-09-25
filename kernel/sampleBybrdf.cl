@@ -1,15 +1,8 @@
-/*#pragma OPENCL EXTENSION cl_khr_int64_extended_atomics : enable
-#pragma OPENCL EXTENSION cl_khr_int64_base_atomics : enable
-#pragma OPENCL EXTENSION cl_khr_global_int32_base_atomics : enable
-#pragma OPENCL EXTENSION cl_khr_local_int32_base_atomics : enable
-#pragma OPENCL EXTENSION cl_khr_int64_base_atomics : enable
-#pragma OPENCL EXTENSION cl_khr_global_int32_base_atomics:enable*/
-
 constant int width = 512;
 constant int height = 512;
 constant float PI = 3.14159265359f;
 constant float ONE_OVER_PI = 1 / 3.14159265359f;
-constant int bounces = 15;
+constant int bounces = 10;
 constant float EPSILON = 0.00003f;
 
 
@@ -22,16 +15,16 @@ typedef struct ray_info {
 } ray_info;
 
 typedef struct Triangle {
-	float a[3];
-	float b[3];
-	float c[3];
-	float n[3];
-	float _center[3];
-	float ambient[3];
-	float diffuse[3];
-	float specular[3];
-	float emission[3];
-	float ninsa[3];
+	float3 a;
+	float3 b;
+	float3 c;
+	float3 n;
+	float3 _center;
+	float3 ambient;
+	float3 diffuse;
+	float3 specular;
+	float3 emission;
+	float3 ninsa;
 } Triangle;
 
 typedef struct Ray {
@@ -48,8 +41,6 @@ typedef struct Ray {
 } Ray;
 
 
-uint RANDOM_SEED = 0;
-
 uint hash1(uint x) {
 	x  = x * 0xdefaced + 7091357;
 	x += x >> 10;
@@ -64,8 +55,8 @@ uint hash2(uint x) {
 	return x;
 }
 
-void SetRandomSeed(uint seed){ 
-	RANDOM_SEED = hash1(hash1(seed)); 
+uint SetRandomSeed(uint seed){ 
+	return hash1(hash1(seed)); 
 }
 
 float my_intBitsToFloat(int bits) {
@@ -77,12 +68,12 @@ float my_intBitsToFloat(int bits) {
 	return s * m * pow(2.0f, e - 150);
 }
 
-float Random() {
+float Random(uint randomSeed) {
     const uint mantissaMask = 0x007FFFFFu;
     const uint one          = 0x3F800000u;
     
-    uint h = hash1(RANDOM_SEED);
-	RANDOM_SEED = h;
+    uint h = hash1(randomSeed);
+	randomSeed = h;
     h &= mantissaMask;
     h |= one;
     
@@ -105,7 +96,7 @@ float NsToRoughness(const float ns) {
 void sample_diffuse(Ray* ray, Triangle hitTriangle, bool is_refract, float rand1, float rand2, float rand2s) {
 	float3 hitpoint = ray->origin + ray->t * ray->dir;
 
-	float3 normal = (float3)(hitTriangle.n[0], hitTriangle.n[1], hitTriangle.n[2]);
+	float3 normal = (float3)(hitTriangle.n.x, hitTriangle.n.y, hitTriangle.n.z);
 	float3 normal_facing = dot(normal, ray->dir) < 0.0f ? normal : normal * (-1.0f);
 
 	float3 w = is_refract ? -normal_facing : normal_facing;
@@ -130,7 +121,7 @@ void sample_diffuse(Ray* ray, Triangle hitTriangle, bool is_refract, float rand1
 void sample_diffuse(Ray* ray, Triangle hitTriangle, bool is_refract, float rand1, float rand2, float cosTheta) {
 	float3 hitpoint = ray->origin + ray->t * ray->dir;
 
-	float3 normal = (float3)(hitTriangle.n[0], hitTriangle.n[1], hitTriangle.n[2]);
+	float3 normal = (float3)(hitTriangle.n.x, hitTriangle.n.y, hitTriangle.n.z);
 	float3 normal_facing = dot(normal, ray->dir) < 0.0f ? normal : normal * (-1.0f);
 
 	float phi      = rand1;
@@ -169,9 +160,9 @@ void refraction (Ray* ray, float3 n, float eta, bool is_refract) {
 	
 }
 
-float3 ImportanceSampleGGX(Ray* ray, const float Roughness, const float3 n) {
-	const float r1 = Random();
-	const float r2 = Random();
+float3 ImportanceSampleGGX(Ray* ray, const float Roughness, const float3 n, uint randomSeed) {
+	const float r1 = Random(randomSeed);
+	const float r2 = Random(randomSeed);
 	
 	const float a        = Roughness * Roughness;
 	const float phi      = r1 * 2.0f * PI;
@@ -207,12 +198,12 @@ float3 F_Schlick(const float3 Ks, const float VoH) {
 	return f0 + (1.0f - f0) * Ks;
 }
 
-float3 F_Fresnel(const float3 Ks, const float VoH) {
+/*float3 F_Fresnel(const float3 Ks, const float VoH) {
 	float3 KsSqrt = sqrt(clamp(Ks, (float3)(0.0f), (float3)(0.99f)));
 	float3 n = (1.0f + KsSqrt) / (1.0f - KsSqrt);
 	float3 g = sqrt(n * n + VoH * VoH - 1.0f);
 	return 0.5 * pow((g - VoH) / (g + VoH), (float3)(2.0f)) * (1.0f + pow(((g + VoH) * VoH - 1.0f) / ((g - VoH) * VoH + 1.0f), (float3)(2.0f)));
-}
+}*/
 
 
 float D_GGX(const float Roughness, const float NoH) {
@@ -243,7 +234,7 @@ float4 EvaluateSpecular(const float3 Ks, const float Roughness, const float NoV,
 	return (float4)(specularFactor, specularPDF);
 }
 
-bool BRDF(global Triangle* triangles, Ray* ray, float3* color) {
+bool BRDF(global Triangle* triangles, Ray* ray, float3* color, uint randomSeed) {
 
 	float3 c = *color;
 
@@ -252,9 +243,9 @@ bool BRDF(global Triangle* triangles, Ray* ray, float3* color) {
 		return true;
 	} else {
 		Triangle hitTriangle = triangles[(int)(ray->hitTriID)];
-		float3 lightSource = (float3)(hitTriangle.emission[0], hitTriangle.emission[1], hitTriangle.emission[2]);
+		float3 lightSource = (float3)(hitTriangle.emission.x, hitTriangle.emission.y, hitTriangle.emission.z);
 		
-		if (lightSource[0] != 0) {
+		if (lightSource.x != 0) {
 			*color = c * lightSource;
 			return true;
 		}
@@ -264,17 +255,17 @@ bool BRDF(global Triangle* triangles, Ray* ray, float3* color) {
 			return true;
 		}
 
-		float3 kd = (float3)(hitTriangle.diffuse[0], hitTriangle.diffuse[1], hitTriangle.diffuse[2]);
-		float3 ks = (float3)(hitTriangle.specular[0], hitTriangle.specular[1], hitTriangle.specular[2]);
-		float ni = hitTriangle.ninsa[0];
-		float ns = hitTriangle.ninsa[1];
-		float a = hitTriangle.ninsa[2];
+		float3 kd = (float3)(hitTriangle.diffuse.x, hitTriangle.diffuse.y, hitTriangle.diffuse.z);
+		float3 ks = (float3)(hitTriangle.specular.x, hitTriangle.specular.y, hitTriangle.specular.z);
+		float ni = hitTriangle.ninsa.x;
+		float ns = hitTriangle.ninsa.y;
+		float a = hitTriangle.ninsa.z;
 		const float Roughness = NsToRoughness(ns);
 		bool is_refract = false;
 
 		float3 v = ray->dir;
 		float3 l = (float3)(0, 0, 0);
-		float3 normal = normalize((float3)(hitTriangle.n[0], hitTriangle.n[1], hitTriangle.n[2]));
+		float3 normal = normalize((float3)(hitTriangle.n.x, hitTriangle.n.y, hitTriangle.n.z));
 		float cosNO = dot(normal, -v);
 		float3 n = cosNO > 0.0f ? normal : -normal;
 		float3 h = 0;
@@ -288,19 +279,19 @@ bool BRDF(global Triangle* triangles, Ray* ray, float3* color) {
 		float pd = mD * one_over_m;
 		float ps = mG * one_over_m;
 
-		if (Random() > a) { 
+		if (Random(randomSeed) > a) { 
 			is_refract = true; 
 		}
 
-		if (Random() < pd) {
-			float rand1 = 2.0f * PI * Random();
-			float rand2 = Random();
+		if (Random(randomSeed) < pd) {
+			float rand1 = 2.0f * PI * Random(randomSeed);
+			float rand2 = Random(randomSeed);
 			float rand2s = sqrt(rand2);
 
 			sample_diffuse(ray, hitTriangle, is_refract, rand1, rand2, rand2s);
 			h = normalize(-v + ray->dir);
 		} else {
-			h = ImportanceSampleGGX(ray, Roughness, n);
+			h = ImportanceSampleGGX(ray, Roughness, n, randomSeed);
 			refraction(ray, h, eta, is_refract);
 		}
 
@@ -312,18 +303,18 @@ bool BRDF(global Triangle* triangles, Ray* ray, float3* color) {
 
 		if(pd > 0.0f) { intensity += pd * EvaluateDiffuse(kd, NoL); }
 		if(ps > 0.0f) { intensity += ps * EvaluateSpecular(ks, Roughness, NoV, NoL, NoH, VoH); }
-		intensity = (float4)(intensity[0] / intensity[3], intensity[1] / intensity[3], intensity[2] / intensity[3], intensity[3]);
+		intensity = (float4)(intensity.x / intensity.w, intensity.y / intensity.w, intensity.z / intensity.w, intensity.w);
 		
-		c = c * (float3)(intensity[0], intensity[1], intensity[2]);
+		c = c * (float3)(intensity.x, intensity.y, intensity.z);
 		
 		/*
-		if (isnan(c[0]) == 1 || isnan(c[1]) == 1 || isnan(c[2]) == 1 || isnan(c[3]) == 1) {
+		if (isnan(c.x) == 1 || isnan(c.y) == 1 || isnan(c.z) == 1 || isnan(c.w) == 1) {
 			*color = (float3)(0, 0, 0);
 			return true;
 		}
 		
 
-		if (c[0] < 0.005 && c[1] < 0.005 && c[2] < 0.005) {
+		if (c.x < 0.005 && c.y < 0.005 && c.z < 0.005) {
 			*color = (float3)(0, 0, 0);
 			return true;
 		}
@@ -331,36 +322,36 @@ bool BRDF(global Triangle* triangles, Ray* ray, float3* color) {
 
 		*color = c;
 		return false;
-		
 	}
 
 }
 
-kernel void brdf_kernel(global Triangle* triangles, global ray_info* ray_buffer, global long* streamTable, __global int* atomicBuffer, global float4* output, const uint rng, int NDcounter) {
-	unsigned int work_item_id = get_global_id(0);	 /*the unique global id of the work item for the current pixel */
-	unsigned int x_coord = work_item_id % width;			 /*x-coordinate of the pixel */
-	unsigned int y_coord = work_item_id / width;			 /*y-coordinate of the pixel */
+kernel void brdf_kernel(global Triangle* triangles, global ray_info* ray_buffer, global long* streamTable, global int* atomicBuffer, global float4* output, const uint rng, int NDcounter) {
+	unsigned int work_item_id = get_global_id(0);
+	unsigned int x_coord = work_item_id % width;	
+	unsigned int y_coord = work_item_id / width;	
 	
-	SetRandomSeed(hash1(x_coord) ^ hash2(y_coord) ^ rng);
+	uint randomSeed = SetRandomSeed(hash1(x_coord) ^ hash2(y_coord) ^ rng);
 
 	if (work_item_id < NDcounter) {
-
 		int ray_id = streamTable[work_item_id];
 
-		float3 color = (float3)(ray_buffer[ray_id].color[0], ray_buffer[ray_id].color[1], ray_buffer[ray_id].color[2]);
+		float3 color = (float3)(ray_buffer[ray_id].color.x, ray_buffer[ray_id].color.y, ray_buffer[ray_id].color.z);
 		
 		Ray ray;
-		ray.hitTriID = ray_buffer[ray_id].ori[3];
-		ray.dir = (float3)(ray_buffer[ray_id].dir[0], ray_buffer[ray_id].dir[1], ray_buffer[ray_id].dir[2]);
-		ray.uv = (float3)(ray_buffer[ray_id].hitPoint[0], ray_buffer[ray_id].hitPoint[1], ray_buffer[ray_id].hitPoint[2]);
-		ray.depth = ray_buffer[ray_id].dir[3];
+		ray.hitTriID = ray_buffer[ray_id].ori.w;
+		ray.dir = (float3)(ray_buffer[ray_id].dir.x, ray_buffer[ray_id].dir.y, ray_buffer[ray_id].dir.z);
+		ray.uv = (float3)(ray_buffer[ray_id].hitPoint.x, ray_buffer[ray_id].hitPoint.y, ray_buffer[ray_id].hitPoint.z);
+		ray.depth = ray_buffer[ray_id].dir.w;
 		
-		bool terminate = BRDF(triangles, &ray, &color);
+		bool terminate = BRDF(triangles, &ray, &color, randomSeed);
 
 		if (terminate) {
-			output[ray_id] += (float4)(color, 1);
+			/*printf("%f %f %f\n", color.x, color.y, color.z);
+			output[ray_id] += (float4)(color, 1);*/
+			output[ray_id] += (float4)(1, 1, 1, 1);
 		} else {
-			int range = atomic_fetch_add_explicit((global atomic_int*)atomicBuffer, 1, memory_order_seq_cst, memory_scope_device);
+			int range = atomic_add(atomicBuffer, 1);
 			
 			streamTable[range] = ray_id;
 
@@ -368,8 +359,7 @@ kernel void brdf_kernel(global Triangle* triangles, global ray_info* ray_buffer,
 
 			ray_buffer[ray_id].color = (float4)(color, 0);
 			ray_buffer[ray_id].dir = (float4)(ray.dir, ray.depth);
-			ray_buffer[ray_id].ori = (float4)(ray.origin, ray.hitTriID);			
+			ray_buffer[ray_id].ori = (float4)(ray.origin, ray.hitTriID);
 		}
 	} 
-
 }

@@ -24,29 +24,27 @@
 #include "matLoader.h"
 #include "bvh.h"
 
-
 using namespace cl;
 
 const int image_width = 512;
 const int image_height = 512;
-const int bounces = 15;
+const int bounces = 10;
 int SAMPLE = 0;
 
-cl_float4* gpu_output;
+cl_mem gpu_output;
 cl_float3 vbo_output[image_width * image_height];
 cl_float4* output;
 
 CommandQueue queue;
 Device device;
-Kernel kernel;
 Kernel initial, generation, traversal, rendering, initAtomic;
 Context context;
 Program program;
-Buffer cl_output, streamTable, ray_buffer;
+Buffer cl_output, streamTable, ray_buffer, triangleBuffer, treeBuffer;
 Buffer atomicBuffer;
 int* streamCounter = new int;
 
-int deb[263144] = { 0 };
+int deb[262144] = { 0 };
 int debC = 0;
 
 HGLRC g_hRC = NULL;
@@ -62,7 +60,7 @@ HWND  g_hWnd = NULL;
 //const int BVH_size = 64;
 //const int triangle_size = 38;
 
-// 0
+// test1
 //const int triangle_size = 46;
 //const int BVH_size = 64;
 
@@ -87,8 +85,8 @@ HWND  g_hWnd = NULL;
 //float3 uni_eye = (float3)(0.0f, 2.0f, 5.2f);
 
 // box4
-//const int BVH_size = 4096;
-//const int triangle_size = 3945;
+const int BVH_size = 4096;
+const int triangle_size = 3945;
 //float3 uni_eye = (float3)(0.0f, 2.0f, 5.2f);
 
 // box5
@@ -97,8 +95,8 @@ HWND  g_hWnd = NULL;
 //float3 uni_eye = (float3)(0.0f, 2.0f, 5.2f);
 
 // bathroom
-const int BVH_size = 2097152;
-const int triangle_size = 1415864;
+//const int BVH_size = 2097152;
+//const int triangle_size = 1415864;
 //float3 uni_view = normalize((float3)(0, 0, 1));
 //float3 uni_eye = (float3)(0.0, 0.68, -2.48);
 
@@ -120,20 +118,23 @@ struct cl_BVH {
 };
 
 struct cl_Triangle {
-	cl_float _a[3];
-	cl_float _b[3];
-	cl_float _c[3];
-	cl_float _n[3];
-	cl_float _center[3];
-	cl_float _ambient[3];
-	cl_float _diffuse[3];
-	cl_float _specular[3];
-	cl_float _emission[3];
-	cl_float _ninsa[3];
+	cl_float3 _a;
+	cl_float3 _b;
+	cl_float3 _c;
+	cl_float3 _n;
+	cl_float3 _center;
+	cl_float3 _ambient;
+	cl_float3 _diffuse;
+	cl_float3 _specular;
+	cl_float3 _emission;
+	cl_float3 _ninsa;
 };
 
-cl_BVH* cl_BVHTree;
-cl_Triangle* cl_triangles;
+#define float3(x, y, z) {{x, y, z}}  // macro to replace ugly initializer braces
+#define float4(x, y, z) {{x, y, z}}
+
+cl_Triangle cl_triangles[triangle_size];
+cl_BVH cl_BVHTree[BVH_size];
 int count = 0;
 
 
@@ -248,9 +249,11 @@ void initOpenCL() {
 		std::cout << "\t\tMax work item size: " << maxWorkItems[0] << std::endl;
 		std::cout << "\t\tMax work item size: " << maxWorkItems[1] << std::endl;
 		std::cout << "\t\tMax work item size: " << maxWorkItems[2] << std::endl;
+		std::cout << "\t\tMax constant buffer size:" << devices[i].getInfo<CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE >() << std::endl;
+		std::cout << "\t\tMax constant args:" << devices[i].getInfo<CL_DEVICE_MAX_CONSTANT_ARGS >() << std::endl;
 		std::cout << "\t\tVersion:" << devices[i].getInfo<CL_DEVICE_OPENCL_C_VERSION>() << std::endl << std::endl;
 	}
-
+	
 	// Pick one device
 	pickDevice(device, devices);
 	std::cout << "\nUsing OpenCL device: \t" << device.getInfo<CL_DEVICE_NAME>() << std::endl;
@@ -287,11 +290,11 @@ void initOpenCL() {
 
 	// Convert the OpenCL source code to a string
 	std::string source;
-	std::ifstream init("./kernel/init.cl");
-	std::ifstream gen("./kernel/ray_generation.cl");
-	std::ifstream traverse("./kernel/traversal.cl");
-	std::ifstream render("./kernel/sampleBybrdf.cl");
-	std::ifstream cleanAtomic("./kernel/initAtomic.cl");
+	std::ifstream init("../PathTracing/kernel/init.cl");
+	std::ifstream gen("../PathTracing/kernel/rayGeneration.cl");
+	std::ifstream traverse("../PathTracing/kernel/traversal.cl");
+	std::ifstream render("../PathTracing/kernel/sampleBybrdf.cl");
+	std::ifstream cleanAtomic("../PathTracing/kernel/initAtomic.cl");
 
 	if (!init && !gen && !traverse && !render) {
 		std::cout << "\nNo OpenCL file found!" << std::endl << "Exiting..." << std::endl;
@@ -309,7 +312,8 @@ void initOpenCL() {
 
 	// Create an OpenCL program by performing runtime source compilation for the chosen device
 	program = Program(context, kernel_source);
-	cl_int result = program.build({ device }, "-cl-std=CL2.0");
+	std::cout << "Build kernel : initial" << std::endl;
+	cl_int result = program.build({ device }, "-cl-std=CL1.2");
 	if (result) std::cout << "Error during compilation OpenCL code!!!\n (" << result << ")" << std::endl;
 	if (result == CL_BUILD_PROGRAM_FAILURE) printErrorLog(program, device);
 
@@ -328,7 +332,8 @@ void initOpenCL() {
 
 	// Create an OpenCL program by performing runtime source compilation for the chosen device
 	program = Program(context, kernel_source);
-	result = program.build({ device }, "-cl-std=CL2.0");
+	std::cout << "Build kernel : generate" << std::endl;
+	result = program.build({ device }, "-cl-std=CL1.2");
 	if (result) std::cout << "Error during compilation OpenCL code!!!\n (" << result << ")" << std::endl;
 	if (result == CL_BUILD_PROGRAM_FAILURE) printErrorLog(program, device);
 
@@ -347,7 +352,8 @@ void initOpenCL() {
 
 	// Create an OpenCL program by performing runtime source compilation for the chosen device
 	program = Program(context, kernel_source);
-	result = program.build({ device }, "-cl-std=CL2.0");
+	std::cout << "Build kernel : traversal" << std::endl;
+	result = program.build({ device }, "-cl-std=CL1.2");
 	if (result) std::cout << "Error during compilation OpenCL code!!!\n (" << result << ")" << std::endl;
 	if (result == CL_BUILD_PROGRAM_FAILURE) printErrorLog(program, device);
 
@@ -366,7 +372,8 @@ void initOpenCL() {
 
 	// Create an OpenCL program by performing runtime source compilation for the chosen device
 	program = Program(context, kernel_source);
-	result = program.build({ device }, "-cl-std=CL2.0");
+	std::cout << "Build kernel : render" << std::endl;
+	result = program.build({ device }, "-cl-std=CL1.2");
 	if (result) std::cout << "Error during compilation OpenCL code!!!\n (" << result << ")" << std::endl;
 	if (result == CL_BUILD_PROGRAM_FAILURE) printErrorLog(program, device);
 
@@ -385,7 +392,8 @@ void initOpenCL() {
 
 	// Create an OpenCL program by performing runtime source compilation for the chosen device
 	program = Program(context, kernel_source);
-	result = program.build({ device }, "-cl-std=CL2.0");
+	std::cout << "Build kernel : initAtomic" << std::endl;
+	result = program.build({ device }, "-cl-std=CL1.2");
 	if (result) std::cout << "Error during compilation OpenCL code!!!\n (" << result << ")" << std::endl;
 	if (result == CL_BUILD_PROGRAM_FAILURE) printErrorLog(program, device);
 
@@ -393,111 +401,79 @@ void initOpenCL() {
 	initAtomic = Kernel(program, "initAtomic_kernel");
 }
 
+#define float3(x, y, z) {{x, y, z}}
+
 void initTriSturct(std::vector<Triangle> triangles) {
-
-	cl_Triangle* data = cl_triangles;
-	cl_Triangle* temp = data;
-
-	// transport data
 	for (int i = 0; i < triangle_size; i++) {
 		vec3 vec;
 		vec = triangles[i].get_a();
-		temp->_a[0] = vec[0];
-		temp->_a[1] = vec[1];
-		temp->_a[2] = vec[2];
+		cl_triangles[i]._a = float3(vec[0], vec[1], vec[2]);
+		
 		vec = triangles[i].get_b();
-		temp->_b[0] = vec[0];
-		temp->_b[1] = vec[1];
-		temp->_b[2] = vec[2];
+		cl_triangles[i]._b = float3(vec[0], vec[1], vec[2]);
+
 		vec = triangles[i].get_c();
-		temp->_c[0] = vec[0];
-		temp->_c[1] = vec[1];
-		temp->_c[2] = vec[2];
+		cl_triangles[i]._c = float3(vec[0], vec[1], vec[2]);
+
 		vec = triangles[i].get_n();
-		temp->_n[0] = vec[0];
-		temp->_n[1] = vec[1];
-		temp->_n[2] = vec[2];
+		cl_triangles[i]._n = float3(vec[0], vec[1], vec[2]);
+
 		vec = triangles[i].getCenter();
-		temp->_center[0] = vec[0];
-		temp->_center[1] = vec[1];
-		temp->_center[2] = vec[2];
+		cl_triangles[i]._center = float3(vec[0], vec[1], vec[2]);
 
 		Material mat = triangles[i].get_m();
 		vec = mat.getKa();
-		temp->_ambient[0] = vec[0];
-		temp->_ambient[1] = vec[1];
-		temp->_ambient[2] = vec[2];
+		cl_triangles[i]._ambient = float3(vec[0], vec[1], vec[2]);
+		
 		vec = mat.getKd();
-		temp->_diffuse[0] = vec[0];
-		temp->_diffuse[1] = vec[1];
-		temp->_diffuse[2] = vec[2];
-		vec = mat.getKs();
-		temp->_specular[0] = vec[0];
-		temp->_specular[1] = vec[1];
-		temp->_specular[2] = vec[2];
-		vec = mat.getKe();
-		temp->_emission[0] = vec[0];
-		temp->_emission[1] = vec[1];
-		temp->_emission[2] = vec[2];
-		float ni = mat.getNi();
-		temp->_ninsa[0] = ni;
-		float ns = mat.getNs();
-		temp->_ninsa[1] = ns;
-		float a = mat.getIa();
-		temp->_ninsa[2] = a;
+		cl_triangles[i]._diffuse = float3(vec[0], vec[1], vec[2]);
 
-		temp += 1;
+		vec = mat.getKs();
+		cl_triangles[i]._specular = float3(vec[0], vec[1], vec[2]);
+
+		vec = mat.getKe();
+		cl_triangles[i]._emission = float3(vec[0], vec[1], vec[2]);
+
+		float ni = mat.getNi();
+		cl_triangles[i]._ninsa.x = ni;
+		float ns = mat.getNs();
+		cl_triangles[i]._ninsa.y = ns;
+		float a = mat.getIa();
+		cl_triangles[i]._ninsa.z = a;
 	}
 
 }
 
 void initBVHstruct(BVHTree bt) {
-
-	cl_BVH* data = cl_BVHTree;
-	cl_BVH* temp = data;
-
-	temp->points[1].x = -1;
-	temp->points[1].y = -1;
-	temp->points[1].z = -1;
-
-	temp->points[0].x = -1;
-	temp->points[0].y = -1;
-	temp->points[0].z = -1;
-
-	temp->triangleList[0] = -1;
-	temp->triangleList[1] = -1;
+	cl_BVHTree[0].points[0] = float3(-1, -1, -1);
+	cl_BVHTree[0].points[1] = float3(-1, -1, -1);
+	cl_BVHTree[0].triangleList[0] = -1;
+	cl_BVHTree[0].triangleList[1] = -1;
 
 	for (int i = 1; i < bt.getSize(); i++) {
-
-		temp += 1;
-
 		BVHNode node = bt.getBVHNode(i);
 		AABB box = bt.getBVHNode(i).getAABB();
 		vec3 vec;
 
 		vec = box.get_pointMax();
-		temp->points[1].x = vec[0];
-		temp->points[1].y = vec[1];
-		temp->points[1].z = vec[2];
+		cl_BVHTree[i].points[1] = float3(vec[0], vec[1], vec[2]);
 
 		vec = box.get_pointMin();
-		temp->points[0].x = vec[0];
-		temp->points[0].y = vec[1];
-		temp->points[0].z = vec[2];
+		cl_BVHTree[i].points[0] = float3(vec[0], vec[1], vec[2]);
 
 		if (node.get_isleaf() == 1.0) {
 			for (int j = 0; j < 2; j++) {
 				int tri = bt.getBVHNode(i).getTriList(j);
 				if (tri != -1) {
-					temp->triangleList[j] = tri;
+					cl_BVHTree[i].triangleList[j] = tri;
 				}
 				else {
-					temp->triangleList[j] = -1;
+					cl_BVHTree[i].triangleList[j] = -1;
 				}
 			}
 		}
 		else {
-			temp->triangleList[0] = -1;
+			cl_BVHTree[i].triangleList[0] = -1;
 		}
 	}
 
@@ -514,11 +490,11 @@ void saveImage() {
 	FILE* f = fopen("opencl_raytracer.ppm", "w");
 	fprintf(f, "P3\n%d %d\n%d\n", image_width, image_height, 255);
 
-	cl_int err = CL_SUCCESS;
+	
 
 	// loop over all pixels, write RGB values
 	for (int i = 0; i < image_width * image_height; i++) {
-		//std::cout << "save : " << output[i].s[0] << std::endl;
+		std::cout << "save : " << output[i].s[1] << std::endl;
 		fprintf(f, "%d %d %d ",
 			toInt(output[i].s[0] / output[i].s[3]),
 			toInt(output[i].s[1] / output[i].s[3]),
@@ -526,19 +502,18 @@ void saveImage() {
 	}
 }
 
-#define float3(x, y, z) {{x, y, z}}  // macro to replace ugly initializer braces
 
 void main() {
 
 	// initialise OpenGL
-	std::cout << "initialise OpenGL...\n" << std::endl;
+	std::cout << "Initialise OpenGL...\n" << std::endl;
 
 	glfwInit();
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-	GLFWwindow* window = glfwCreateWindow(image_width, image_height, "LearnOpenGL", NULL, NULL);
+	GLFWwindow* window = glfwCreateWindow(image_width, image_height, "OpenClPathTracer", NULL, NULL);
 
 	if (window == NULL)
 	{
@@ -555,7 +530,7 @@ void main() {
 		std::cout << "Failed to initialize GLAD" << std::endl;
 	}
 
-	Shader shader("./shader/texture.vs", "./shader/texture.fs");
+	Shader shader("../PathTracing/shader/texture.vs", "../PathTracing/shader/texture.fs");
 
 	float vertices[] = {
 		// positions          // colors           // texture coords
@@ -607,7 +582,7 @@ void main() {
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, image_width, image_height, 0, GL_RGBA, GL_FLOAT, 0);
 
 	// initialise OpenCL
-	std::cout << "initialise OpenCL...\n" << std::endl;
+	std::cout << "Initialise OpenCL...\n" << std::endl;
 
 	initOpenCL();
 	cl_int err = CL_SUCCESS;
@@ -616,85 +591,44 @@ void main() {
 
 	output = new cl_float4[image_width * image_height];
 
+	for (int i = 0; i < image_width * image_height; i++) {
+		output[i] = float4(0.0, 0.0, 0.0, 0.0);
+	}
+
 	streamTable = Buffer(context, CL_MEM_READ_WRITE, image_width * image_height * sizeof(cl_long));
 	ray_buffer = Buffer(context, CL_MEM_READ_WRITE, image_width * image_height * sizeof(ray_info));
-
-	cl_triangles = (cl_Triangle*)clSVMAlloc(
-		context(),                // the context where this memory is supposed to be used
-		CL_MEM_READ_ONLY,
-		triangle_size * sizeof(cl_Triangle),   // amount of memory to allocate (in bytes)
-		0                       // alignment in bytes (0 means default)
-	);
-
-	gpu_output = (cl_float3*)clSVMAlloc(
-		context(),                // the context where this memory is supposed to be used
-		CL_MEM_WRITE_ONLY,
-		image_width * image_height * sizeof(cl_float4),     // amount of memory to allocate (in bytes)
-		0                       // alignment in bytes (0 means default)
-	);
+	gpu_output = clCreateBuffer(context(), CL_MEM_USE_HOST_PTR, image_width * image_height * sizeof(cl_float4), output, &err);
+	//gpu_output = clCreateFromGLTexture(context(), CL_MEM_READ_WRITE, GL_TEXTURE_2D, 0, texture, &err);
+	std::cout << "err : " << err << std::endl;
+	triangleBuffer = Buffer(context, CL_MEM_READ_ONLY, triangle_size * sizeof(cl_Triangle));
+	treeBuffer = Buffer(context, CL_MEM_READ_ONLY, BVH_size * sizeof(cl_BVH));
+	atomicBuffer = Buffer(context, CL_MEM_READ_WRITE, sizeof(cl_int));
 
 	// initialise scene
 
 	std::map<std::string, Material> material;
 	std::cout << "Loading mtl" << std::endl;
-	//material = matLoader("./scene/box_4.mtl");
-	material = matLoader("./scene/bathroom.mtl");
-	//material = matLoader("untitled7.mtl");
+	material = matLoader("../PathTracing/scene/box_4.mtl");
+	//material = matLoader("./scene/bathroom.mtl");
+	//material = matLoader("../PathTracing/scene/test1.mtl");
 
 	std::cout << std::endl;
 
 	std::vector<Triangle> triangles;
 	std::cout << "Loading obj" << std::endl;
-	//bool res = objLoader("./scene/box_4.obj", triangles, material);
-	bool res = objLoader("./scene/bathroom.obj", triangles, material);
-	//bool res = objLoader("untitled7.obj", triangles, material);
+	bool res = objLoader("../PathTracing/scene/box_4.obj", triangles, material);
+	//bool res = objLoader("./scene/bathroom.obj", triangles, material);
+	//bool res = objLoader("../PathTracing/scene/test1.obj", triangles, material);
 
 	BVHTree bt;
+
 	bt.buildBVHTree(triangles);
-
-	cl_BVHTree = (cl_BVH*)clSVMAlloc(
-		context(),                // the context where this memory is supposed to be used
-		CL_MEM_READ_ONLY,
-		BVH_size * sizeof(cl_BVH),   // amount of memory to allocate (in bytes)
-		0                       // alignment in bytes (0 means default)
-	);
-
-	err = clEnqueueSVMMap(
-		queue(),
-		CL_TRUE,       // blocking map
-		CL_MAP_WRITE,
-		cl_BVHTree,
-		sizeof(cl_BVH) * BVH_size,
-		0, 0, 0
-	);
-
 	initBVHstruct(bt);
-
-	err = clEnqueueSVMUnmap(
-		queue(),
-		cl_BVHTree,
-		0, 0, 0
-	);
-
-	err = clEnqueueSVMMap(
-		queue(),
-		CL_TRUE,       // blocking map
-		CL_MAP_WRITE,
-		cl_triangles,
-		sizeof(cl_Triangle) * triangle_size,
-		0, 0, 0
-	);
-
 	initTriSturct(triangles);
 
-	err = clEnqueueSVMUnmap(
-		queue(),
-		cl_triangles,
-		0, 0, 0
-	);
-
-	atomicBuffer = Buffer(context, CL_MEM_READ_WRITE, sizeof(cl_int));
-
+	queue.enqueueWriteBuffer(treeBuffer, CL_TRUE, 0, BVH_size * sizeof(cl_BVH), cl_BVHTree);
+	queue.enqueueWriteBuffer(triangleBuffer, CL_TRUE, 0, triangle_size * sizeof(cl_Triangle), cl_triangles);
+	queue.finish();
 	// every pixel in the image has its own thread or "work item",
 	// so the total amount of work items equals the number of pixels
 	std::size_t global_work_size = image_width * image_height;
@@ -718,7 +652,7 @@ void main() {
 		// ray initial-------------------------------
 
 		initial.setArg(0, ray_buffer);
-		clSetKernelArgSVMPointer(initial(), 1, gpu_output);
+		initial.setArg(1, gpu_output);
 		initial.setArg(2, streamTable);
 		initial.setArg(3, atomicBuffer);
 
@@ -745,19 +679,20 @@ void main() {
 			generation.setArg(2, atomicBuffer);
 			generation.setArg(3, rngx);
 			generation.setArg(4, rngy);
-
+			generation.setArg(5, triangleBuffer);
+			
 			queue.enqueueNDRangeKernel(generation, NULL, image_width * image_height, local_work_size, NULL, NULL);
 
 			queue.enqueueReadBuffer(atomicBuffer, CL_TRUE, 0, sizeof(cl_int), streamCounter);
 
 			int NDCounter = 0;
 			int modND = 0;
-
+			
 
 			for (int i = 0; i < bounces; i++) {
 
 				queue.enqueueReadBuffer(atomicBuffer, CL_TRUE, 0, sizeof(cl_int), streamCounter);
-
+				std::cout << *streamCounter << std::endl;
 				//queue.finish();
 
 				NDCounter = *streamCounter;
@@ -766,7 +701,6 @@ void main() {
 
 				if (modND % local_work_size != 0)
 					modND = (modND / local_work_size + 1) * local_work_size;
-
 
 				// clean atomic-------------------------------
 
@@ -780,14 +714,13 @@ void main() {
 
 				//glFinish();
 
-				clSetKernelArgSVMPointer(traversal(), 0, cl_triangles);
-				clSetKernelArgSVMPointer(traversal(), 1, cl_BVHTree);
+				traversal.setArg(0, triangleBuffer);
+				traversal.setArg(1, treeBuffer);
 				traversal.setArg(2, streamTable);
 				traversal.setArg(3, NDCounter);
 				traversal.setArg(4, ray_buffer);
 
 				queue.enqueueNDRangeKernel(traversal, NULL, modND, local_work_size, NULL, NULL);
-
 				//queue.finish();
 
 				// rendering-------------------------------
@@ -795,16 +728,17 @@ void main() {
 				unsigned int rng = random_uint(generator);
 				std::uniform_real_distribution<cl_float> random_float_01(0.0f, 1.0f);
 
-				clSetKernelArgSVMPointer(rendering(), 0, cl_triangles);
+				rendering.setArg(0, triangleBuffer);
 				rendering.setArg(1, ray_buffer);
 				rendering.setArg(2, streamTable);
 				rendering.setArg(3, atomicBuffer);
-				clSetKernelArgSVMPointer(rendering(), 4, gpu_output);
+				rendering.setArg(4, gpu_output);
 				rendering.setArg(5, rng);
 				rendering.setArg(6, NDCounter);
 
-				queue.enqueueNDRangeKernel(rendering, NULL, modND, local_work_size, NULL, NULL);
-
+				err = queue.enqueueNDRangeKernel(rendering, NULL, modND, local_work_size, NULL, NULL);
+				queue.finish();
+				//std::cout << "render err : " << err << "\n";
 				//queue.finish();
 
 				queue.enqueueReadBuffer(atomicBuffer, CL_TRUE, 0, sizeof(cl_int), streamCounter);
@@ -813,40 +747,28 @@ void main() {
 
 			}
 
-			err = clEnqueueSVMMap(
-				queue(),
-				CL_TRUE,       // blocking map
-				CL_MAP_READ,
-				gpu_output,
-				sizeof(cl_float4) * image_width * image_height,
-				0, 0, 0
-			);
-
+			//cl_int result = queue.enqueueReadBuffer(gpu_output, CL_TRUE, 0, sizeof(cl_float4), output);
+			cl_int result = clEnqueueReadBuffer(queue(), gpu_output, CL_TRUE, 0, sizeof(cl_float4), output, 0, NULL, NULL);
+			std::cout << "err : " << result << std::endl;
 			//std::cout << "Rendering done! \nCopying output from device to host" << std::endl;
-
+			
 			glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
 			glClear(GL_COLOR_BUFFER_BIT);
 
 			glActiveTexture(GL_TEXTURE0);
 			glBindTexture(GL_TEXTURE_2D, texture);
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, image_width, image_height, 0, GL_RGBA, GL_FLOAT, gpu_output);
-
-			err = clEnqueueSVMUnmap(
-				queue(),
-				gpu_output,
-				0, 0, 0
-			);
-
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, image_width, image_height, 0, GL_RGBA, GL_FLOAT, output);
+			
 			shader.use();
 			glBindVertexArray(VAO); 
 			glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
 			glfwSwapBuffers(window);
 			glfwPollEvents();
-
+			
 			SAMPLE++;
 			
-			if (SAMPLE == 3000) {
+			if (SAMPLE == 1) {
 				break;
 			}
 			
@@ -855,28 +777,17 @@ void main() {
 		END = clock();
 		tt = (END - START);
 
-		printf("%f\n", tt);
+		//printf("%f\n", tt);
 
-		err = clEnqueueSVMMap(
-			queue(),
-			CL_TRUE,       // blocking map
-			CL_MAP_READ,
-			gpu_output,
-			sizeof(cl_float4) * image_width * image_height,
-			0, 0, 0
-		);
-
+		
+		/*
 		for (int j = 0; j < image_width * image_height; j++) {
 			output[j] = { gpu_output[j].s[0], gpu_output[j].s[1], gpu_output[j].s[2], gpu_output[j].s[3] };
 		}
+		*/
+		
 
-		err = clEnqueueSVMUnmap(
-			queue(),
-			gpu_output,
-			0, 0, 0
-		);
-
-		std::cout << "loop time " << SAMPLE << std::endl;
+		//std::cout << "loop time " << SAMPLE << std::endl;
 		
 		break;
 	}
@@ -887,6 +798,6 @@ void main() {
 	saveImage();
 	std::cout << "Saved image to 'opencl_raytracer.ppm'" << std::endl;
 
-	system("PAUSE");
+	//system("PAUSE");
 
 }
