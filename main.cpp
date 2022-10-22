@@ -28,7 +28,7 @@ using namespace cl;
 
 const int image_width = 512;
 const int image_height = 512;
-const int bounces = 10;
+const int BOUNCE = 10;
 int SAMPLE = 0;
 
 cl_mem gpu_output;
@@ -290,11 +290,11 @@ void initOpenCL() {
 
 	// Convert the OpenCL source code to a string
 	std::string source;
-	std::ifstream init("../PathTracing/kernel/init.cl");
-	std::ifstream gen("../PathTracing/kernel/rayGeneration.cl");
-	std::ifstream traverse("../PathTracing/kernel/traversal.cl");
-	std::ifstream render("../PathTracing/kernel/sampleBybrdf.cl");
-	std::ifstream cleanAtomic("../PathTracing/kernel/initAtomic.cl");
+	std::ifstream init("../kernel/init.cl");
+	std::ifstream gen("../kernel/rayGeneration.cl");
+	std::ifstream traverse("../kernel/traversal.cl");
+	std::ifstream render("../kernel/sampleBybrdf.cl");
+	std::ifstream cleanAtomic("../kernel/initAtomic.cl");
 
 	if (!init && !gen && !traverse && !render) {
 		std::cout << "\nNo OpenCL file found!" << std::endl << "Exiting..." << std::endl;
@@ -494,7 +494,7 @@ void saveImage() {
 
 	// loop over all pixels, write RGB values
 	for (int i = 0; i < image_width * image_height; i++) {
-		std::cout << "save : " << output[i].s[1] << std::endl;
+		//std::cout << "save : " << output[i].s[3] << std::endl;
 		fprintf(f, "%d %d %d ",
 			toInt(output[i].s[0] / output[i].s[3]),
 			toInt(output[i].s[1] / output[i].s[3]),
@@ -530,7 +530,7 @@ void main() {
 		std::cout << "Failed to initialize GLAD" << std::endl;
 	}
 
-	Shader shader("../PathTracing/shader/texture.vs", "../PathTracing/shader/texture.fs");
+	Shader shader("../shader/texture.vs", "../shader/texture.fs");
 
 	float vertices[] = {
 		// positions          // colors           // texture coords
@@ -608,17 +608,17 @@ void main() {
 
 	std::map<std::string, Material> material;
 	std::cout << "Loading mtl" << std::endl;
-	material = matLoader("../PathTracing/scene/box_4.mtl");
-	//material = matLoader("./scene/bathroom.mtl");
-	//material = matLoader("../PathTracing/scene/test1.mtl");
+	material = matLoader("../scene/box_4.mtl");
+	//material = matLoader("../scene/bathroom.mtl");
+	//material = matLoader("../scene/test1.mtl");
 
 	std::cout << std::endl;
 
 	std::vector<Triangle> triangles;
 	std::cout << "Loading obj" << std::endl;
-	bool res = objLoader("../PathTracing/scene/box_4.obj", triangles, material);
-	//bool res = objLoader("./scene/bathroom.obj", triangles, material);
-	//bool res = objLoader("../PathTracing/scene/test1.obj", triangles, material);
+	bool res = objLoader("../scene/box_4.obj", triangles, material);
+	//bool res = objLoader("../scene/bathroom.obj", triangles, material);
+	//bool res = objLoader("../scene/test1.obj", triangles, material);
 
 	BVHTree bt;
 
@@ -689,10 +689,10 @@ void main() {
 			int modND = 0;
 			
 
-			for (int i = 0; i < bounces; i++) {
+			for (int i = 0; i < BOUNCE; i++) {
 
 				queue.enqueueReadBuffer(atomicBuffer, CL_TRUE, 0, sizeof(cl_int), streamCounter);
-				std::cout << *streamCounter << std::endl;
+				//std::cout << *streamCounter << std::endl;
 				//queue.finish();
 
 				NDCounter = *streamCounter;
@@ -747,11 +747,19 @@ void main() {
 
 			}
 
+			cl_event event;
 			//cl_int result = queue.enqueueReadBuffer(gpu_output, CL_TRUE, 0, sizeof(cl_float4), output);
-			cl_int result = clEnqueueReadBuffer(queue(), gpu_output, CL_TRUE, 0, sizeof(cl_float4), output, 0, NULL, NULL);
-			std::cout << "err : " << result << std::endl;
+			cl_int result = clEnqueueReadBuffer(queue(), gpu_output, CL_TRUE, 0, image_width * image_height * sizeof(cl_float4), output, 0, NULL, NULL);
+			//queue.finish();
+
 			//std::cout << "Rendering done! \nCopying output from device to host" << std::endl;
 			
+			
+			//for (int j = 0; j < image_width * image_height; j++) {
+			//	output[j] = { gpu_output[j], gpu_output[j].s[1], gpu_output[j].s[2], gpu_output[j].s[3]};
+			//}
+			
+
 			glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
 			glClear(GL_COLOR_BUFFER_BIT);
 
@@ -768,7 +776,8 @@ void main() {
 			
 			SAMPLE++;
 			
-			if (SAMPLE == 1) {
+			if (SAMPLE == 100) {
+				//system("PAUSE");
 				break;
 			}
 			

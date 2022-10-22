@@ -2,7 +2,7 @@ constant int width = 512;
 constant int height = 512;
 constant float PI = 3.14159265359f;
 constant float ONE_OVER_PI = 1 / 3.14159265359f;
-constant int bounces = 10;
+constant int BOUNCE = 10;
 constant float EPSILON = 0.00003f;
 
 
@@ -59,7 +59,7 @@ uint SetRandomSeed(uint seed){
 	return hash1(hash1(seed)); 
 }
 
-float my_intBitsToFloat(int bits) {
+float intBitsToFloat(int bits) {
 	int s = ((bits >> 31) == 0) ? 1 : -1;
 	int e = ((bits >> 23) & 0xff);
 	int m = (e == 0) ?
@@ -68,16 +68,16 @@ float my_intBitsToFloat(int bits) {
 	return s * m * pow(2.0f, e - 150);
 }
 
-float Random(uint randomSeed) {
+float Random(uint* randomSeed) {
     const uint mantissaMask = 0x007FFFFFu;
     const uint one          = 0x3F800000u;
     
-    uint h = hash1(randomSeed);
-	randomSeed = h;
+    uint h = hash1(*randomSeed);
+	*randomSeed = h;
     h &= mantissaMask;
     h |= one;
     
-    float  r = my_intBitsToFloat((int)h);
+    float  r = intBitsToFloat((int)h);
     return r - 1.0f;
 }
 
@@ -95,7 +95,7 @@ float NsToRoughness(const float ns) {
 /*
 void sample_diffuse(Ray* ray, Triangle hitTriangle, bool is_refract, float rand1, float rand2, float rand2s) {
 	float3 hitpoint = ray->origin + ray->t * ray->dir;
-
+	float3 hitpoint = ray->uv;
 	float3 normal = (float3)(hitTriangle.n.x, hitTriangle.n.y, hitTriangle.n.z);
 	float3 normal_facing = dot(normal, ray->dir) < 0.0f ? normal : normal * (-1.0f);
 
@@ -118,22 +118,18 @@ void sample_diffuse(Ray* ray, Triangle hitTriangle, bool is_refract, float rand1
 }
 */
 
-void sample_diffuse(Ray* ray, Triangle hitTriangle, bool is_refract, float rand1, float rand2, float cosTheta) {
-	float3 hitpoint = ray->origin + ray->t * ray->dir;
-
-	float3 normal = (float3)(hitTriangle.n.x, hitTriangle.n.y, hitTriangle.n.z);
-	float3 normal_facing = dot(normal, ray->dir) < 0.0f ? normal : normal * (-1.0f);
-
+void sample_diffuse(Ray* ray, float3 normal, bool is_refract, float rand1, float rand2, float cosTheta) {
+	float3 hitpoint = ray->uv;
 	float phi      = rand1;
 	float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
 
-	float3 wi = (float3)(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+	float3 wi = normalize((float3)(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta));
 	float3 up = fabs(normal.z) < 0.999f ? (float3)(0.0f, 0.0f, 1.0f) : (float3)(1.0f, 0.0f, 0.0f);
 	float3 x = normalize(cross(up, normal));
-	float3 y = cross(normal, x);
+	float3 y = normalize(cross(normal, x));
 
 	float3 newdir = normalize(x * wi.x + y * wi.y + normal * wi.z);
-	ray->origin = hitpoint + (is_refract ? -normal_facing : normal_facing) * EPSILON;
+	ray->origin = hitpoint + (is_refract ? -normal : normal) * EPSILON;
 	
 	if (is_refract) {
 		ray->dir = -newdir;
@@ -160,7 +156,7 @@ void refraction (Ray* ray, float3 n, float eta, bool is_refract) {
 	
 }
 
-float3 ImportanceSampleGGX(Ray* ray, const float Roughness, const float3 n, uint randomSeed) {
+float3 ImportanceSampleGGX(Ray* ray, const float Roughness, const float3 n, uint* randomSeed) {
 	const float r1 = Random(randomSeed);
 	const float r2 = Random(randomSeed);
 	
@@ -169,12 +165,12 @@ float3 ImportanceSampleGGX(Ray* ray, const float Roughness, const float3 n, uint
 	const float cosTheta = sqrt((1.0f - r2) / (1.0f + (a * a - 1.0f) * r2));
 	const float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
 	
-	const float3  h  = (float3)(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
+	const float3  h  = normalize((float3)(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta));
 	const float3  up = fabs(n.z) < 0.99f ? (float3)(0.0f, 0.0f, 1.0f) : (float3)(1.0f, 0.0f, 0.0f);
 	const float3  x  = normalize(cross(up, n));
-	const float3  y  = cross(n, x);
+	const float3  y  = normalize(cross(n, x));
 	
-	return x * h.x + y * h.y + n * h.z;
+	return normalize(x * h.x + y * h.y + n * h.z);
 }
 
 float4 EvaluateDiffuse(const float3 Kd, const float NoL) {
@@ -187,10 +183,16 @@ float4 EvaluateDiffuse(const float3 Kd, const float NoL) {
 	const float3  diffuseFactor = Kd * NoL * ONE_OVER_PI;
 	const float diffusePDF = NoL * ONE_OVER_PI;
 	
+	/*if (isnan(diffuseFactor.x) || isnan(diffuseFactor.y) || isnan(diffuseFactor.z)) {
+		printf("nan\n");
+	}*/
+
 	return (float4)(diffuseFactor, diffusePDF);
 }
 
-float3 F_None(const float3 Ks) { return Ks; }
+float3 F_None(const float3 Ks) { 
+	return Ks; 
+}
 
 float3 F_Schlick(const float3 Ks, const float VoH) {
 	const float f0 = pow(1.0f - VoH, 5.0f);
@@ -234,7 +236,7 @@ float4 EvaluateSpecular(const float3 Ks, const float Roughness, const float NoV,
 	return (float4)(specularFactor, specularPDF);
 }
 
-bool BRDF(global Triangle* triangles, Ray* ray, float3* color, uint randomSeed) {
+bool BRDF(global Triangle* triangles, Ray* ray, float3* color, uint* randomSeed) {
 
 	float3 c = *color;
 
@@ -250,7 +252,7 @@ bool BRDF(global Triangle* triangles, Ray* ray, float3* color, uint randomSeed) 
 			return true;
 		}
 
-		if (ray->depth == bounces) {
+		if (ray->depth == BOUNCE) {
 			*color = (float3)(0, 0, 0);
 			return true;
 		}
@@ -267,7 +269,7 @@ bool BRDF(global Triangle* triangles, Ray* ray, float3* color, uint randomSeed) 
 		float3 l = (float3)(0, 0, 0);
 		float3 normal = normalize((float3)(hitTriangle.n.x, hitTriangle.n.y, hitTriangle.n.z));
 		float cosNO = dot(normal, -v);
-		float3 n = cosNO > 0.0f ? normal : -normal;
+		normal = cosNO > 0.0f ? normal : -normal;
 		float3 h = 0;
 		float eta = cosNO > 0.0f ? 1.0f / ni : ni;
 
@@ -288,38 +290,41 @@ bool BRDF(global Triangle* triangles, Ray* ray, float3* color, uint randomSeed) 
 			float rand2 = Random(randomSeed);
 			float rand2s = sqrt(rand2);
 
-			sample_diffuse(ray, hitTriangle, is_refract, rand1, rand2, rand2s);
+			sample_diffuse(ray, normal, is_refract, rand1, rand2, rand2s);
 			h = normalize(-v + ray->dir);
 		} else {
-			h = ImportanceSampleGGX(ray, Roughness, n, randomSeed);
+			h = ImportanceSampleGGX(ray, Roughness, normal, randomSeed);
 			refraction(ray, h, eta, is_refract);
 		}
 
-		float NoV = fabs(dot(n, v));
-		float NoL = fabs(dot(n, ray->dir));
-		float NoH = fabs(dot(n, h));
+		float NoV = fabs(dot(normal, v));
+		float NoL = fabs(dot(normal, ray->dir));
+		float NoH = fabs(dot(normal, h));
 		float VoH = fabs(dot(v, h));
 		float4 intensity = (float4)(0, 0, 0, 0);
 
-		if(pd > 0.0f) { intensity += pd * EvaluateDiffuse(kd, NoL); }
-		if(ps > 0.0f) { intensity += ps * EvaluateSpecular(ks, Roughness, NoV, NoL, NoH, VoH); }
+		if (pd > 0.0f) {
+			intensity += pd * EvaluateDiffuse(kd, NoL);
+		}
+
+		if (ps > 0.0f) {
+			intensity += ps * EvaluateSpecular(ks, Roughness, NoV, NoL, NoH, VoH);
+		}
+
 		intensity = (float4)(intensity.x / intensity.w, intensity.y / intensity.w, intensity.z / intensity.w, intensity.w);
 		
+		if (isnan(intensity.x) || isnan(intensity.y) || isnan(intensity.z)) {
+			*color = c;
+			return true;
+		}
+
 		c = c * (float3)(intensity.x, intensity.y, intensity.z);
 		
-		/*
-		if (isnan(c.x) == 1 || isnan(c.y) == 1 || isnan(c.z) == 1 || isnan(c.w) == 1) {
+		/*if (c.x < 0.005 && c.y < 0.005 && c.z < 0.005) {
 			*color = (float3)(0, 0, 0);
 			return true;
-		}
+		}*/
 		
-
-		if (c.x < 0.005 && c.y < 0.005 && c.z < 0.005) {
-			*color = (float3)(0, 0, 0);
-			return true;
-		}
-		*/
-
 		*color = c;
 		return false;
 	}
@@ -344,12 +349,12 @@ kernel void brdf_kernel(global Triangle* triangles, global ray_info* ray_buffer,
 		ray.uv = (float3)(ray_buffer[ray_id].hitPoint.x, ray_buffer[ray_id].hitPoint.y, ray_buffer[ray_id].hitPoint.z);
 		ray.depth = ray_buffer[ray_id].dir.w;
 		
-		bool terminate = BRDF(triangles, &ray, &color, randomSeed);
+		bool terminate = BRDF(triangles, &ray, &color, &randomSeed);
 
 		if (terminate) {
-			/*printf("%f %f %f\n", color.x, color.y, color.z);
-			output[ray_id] += (float4)(color, 1);*/
-			output[ray_id] += (float4)(1, 1, 1, 1);
+			/*printf("%f %f %f\n", color.x, color.y, color.z);*/
+			output[ray_id] += (float4)(color, 1);
+			/*output[ray_id] += (float4)(1, 1, 1, 1);*/
 		} else {
 			int range = atomic_add(atomicBuffer, 1);
 			

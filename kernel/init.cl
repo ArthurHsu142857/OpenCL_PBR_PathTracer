@@ -1,5 +1,3 @@
-
-
 constant int width = 512;
 constant int height = 512;
 

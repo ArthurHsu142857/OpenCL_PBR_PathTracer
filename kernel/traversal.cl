@@ -128,7 +128,6 @@ bool intersect_BVHscene(global Triangle* triangles, global BVH* BVHtriangles, Ra
 						if (hitdistance != inf && hitdistance < ray->t) {
 							ray->t = hitdistance;
 							ray->hitTriID = (float)(triIndex[i]);
-							
 							hit = true;
 						}
 					}

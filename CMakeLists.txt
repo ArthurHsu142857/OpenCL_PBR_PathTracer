@@ -7,7 +7,7 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 include_directories(${CMAKE_SOURCE_DIR}/include)
 link_directories(${CMAKE_SOURCE_DIR}/lib)
 
-list(APPEND CMAKE_PREFIX_PATH "C:/src/vcpkg/vcpkg/installed/x64-windows")
+list(APPEND CMAKE_PREFIX_PATH "C:/source/vcpkg/installed/x64-windows")
 file(GLOB src
      "*.h"
      "*.cpp"
@@ -22,5 +22,6 @@ add_executable(${NAME} ${src})
 target_link_libraries(${NAME} PRIVATE opengl32)
 target_link_libraries(${NAME} PRIVATE OpenCL)
 target_link_libraries(${NAME} PRIVATE glad)
+target_link_libraries(${NAME} PRIVATE glfw3)
 target_link_libraries(${NAME} PRIVATE glfw3dll)
 
