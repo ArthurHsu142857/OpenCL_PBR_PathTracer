@@ -100,7 +100,7 @@ bool objLoader(const char* path, std::vector<Triangle>& out_triangle, std::map<s
 	}
 
 	fclose(file);
-	return true;
 
+	return true;
 }
 

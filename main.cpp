@@ -26,21 +26,21 @@
 
 using namespace cl;
 
-const int image_width = 512;
-const int image_height = 512;
+const int IMAGEWIDTH = 512;
+const int IMAGEHEIGHT = 512;
 const int BOUNCE = 10;
+
 int SAMPLE = 0;
 
-cl_mem gpu_output;
-cl_float3 vbo_output[image_width * image_height];
-cl_float4* output;
+cl_mem outputBuffer;
+cl_float4* gpuOutput;
 
 CommandQueue queue;
 Device device;
 Kernel initial, generation, traversal, rendering, initAtomic;
 Context context;
 Program program;
-Buffer cl_output, streamTable, ray_buffer, triangleBuffer, treeBuffer;
+Buffer cl_output, queueBuffer, rayBuffer, triangleBuffer, treeBuffer;
 Buffer atomicBuffer;
 int* streamCounter = new int;
 
@@ -444,36 +444,37 @@ void initTriSturct(std::vector<Triangle> triangles) {
 
 }
 
-void initBVHstruct(BVHTree bt) {
+void initBVHstruct(BVHTree tree) {
+	// ...
 	cl_BVHTree[0].points[0] = float3(-1, -1, -1);
 	cl_BVHTree[0].points[1] = float3(-1, -1, -1);
 	cl_BVHTree[0].triangleList[0] = -1;
 	cl_BVHTree[0].triangleList[1] = -1;
 
-	for (int i = 1; i < bt.getSize(); i++) {
-		BVHNode node = bt.getBVHNode(i);
-		AABB box = bt.getBVHNode(i).getAABB();
-		vec3 vec;
+	for (int i = 1; i < tree.getSize(); i++) {
+		BVHNode node = tree.getBVHNode(i);
+		AABB box = tree.getBVHNode(i).getAABB();
+		vec3 point;
 
-		vec = box.get_pointMax();
-		cl_BVHTree[i].points[1] = float3(vec[0], vec[1], vec[2]);
+		point = box.get_pointMax();
+		cl_BVHTree[i].points[1] = float3(point[0], point[1], point[2]);
 
-		vec = box.get_pointMin();
-		cl_BVHTree[i].points[0] = float3(vec[0], vec[1], vec[2]);
+		point = box.get_pointMin();
+		cl_BVHTree[i].points[0] = float3(point[0], point[1], point[2]);
 
 		if (node.get_isleaf() == 1.0) {
 			for (int j = 0; j < 2; j++) {
-				int tri = bt.getBVHNode(i).getTriList(j);
-				if (tri != -1) {
-					cl_BVHTree[i].triangleList[j] = tri;
+				int triangle = tree.getBVHNode(i).getTriList(j);
+				if (triangle != -1) {
+					cl_BVHTree[i].triangleList[j] = triangle;
 				}
 				else {
 					cl_BVHTree[i].triangleList[j] = -1;
 				}
 			}
-		}
-		else {
+		} else {
 			cl_BVHTree[i].triangleList[0] = -1;
+			cl_BVHTree[i].triangleList[1] = -1;
 		}
 	}
 
@@ -488,32 +489,32 @@ void saveImage() {
 	// write image to PPM file, a very simple image file format
 	// PPM files can be opened with IrfanView (download at www.irfanview.com) or GIMP
 	FILE* f = fopen("opencl_raytracer.ppm", "w");
-	fprintf(f, "P3\n%d %d\n%d\n", image_width, image_height, 255);
+	fprintf(f, "P3\n%d %d\n%d\n", IMAGEWIDTH, IMAGEHEIGHT, 255);
 
 	
 
 	// loop over all pixels, write RGB values
-	for (int i = 0; i < image_width * image_height; i++) {
+	for (int i = 0; i < IMAGEWIDTH * IMAGEHEIGHT; i++) {
 		//std::cout << "save : " << output[i].s[3] << std::endl;
 		fprintf(f, "%d %d %d ",
-			toInt(output[i].s[0] / output[i].s[3]),
-			toInt(output[i].s[1] / output[i].s[3]),
-			toInt(output[i].s[2] / output[i].s[3]));
+			toInt(gpuOutput[i].s[0] / gpuOutput[i].s[3]),
+			toInt(gpuOutput[i].s[1] / gpuOutput[i].s[3]),
+			toInt(gpuOutput[i].s[2] / gpuOutput[i].s[3]));
 	}
 }
 
 
 void main() {
 
-	// initialise OpenGL
-	std::cout << "Initialise OpenGL...\n" << std::endl;
+	// Initialise OpenGL
+	std::cout << "Initialise OpenGL ...\n" << std::endl;
 
 	glfwInit();
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-	GLFWwindow* window = glfwCreateWindow(image_width, image_height, "OpenClPathTracer", NULL, NULL);
+	GLFWwindow* window = glfwCreateWindow(IMAGEWIDTH, IMAGEHEIGHT, "OpenCLPathTracer", NULL, NULL);
 
 	if (window == NULL)
 	{
@@ -524,7 +525,7 @@ void main() {
 	glfwMakeContextCurrent(window);
 	glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
-	// glad: load all OpenGL function pointers
+	// GLAD: load all OpenGL function pointers
 	if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
 	{
 		std::cout << "Failed to initialize GLAD" << std::endl;
@@ -534,15 +535,17 @@ void main() {
 
 	float vertices[] = {
 		// positions          // colors           // texture coords
-		 0.8f,  0.8f, 0.0f,   1.0f, 0.0f, 0.0f,   1.0f, 0.0f, // top right
-		 0.8f, -0.8f, 0.0f,   0.0f, 1.0f, 0.0f,   1.0f, 1.0f, // bottom right
-		-0.8f, -0.8f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 1.0f, // bottom left
-		-0.8f,  0.8f, 0.0f,   1.0f, 1.0f, 0.0f,   0.0f, 0.0f  // top left 
+		 0.8f,  0.8f, 0.0f,   1.0f, 0.0f, 0.0f,   1.0f, 0.0f,	// top right
+		 0.8f, -0.8f, 0.0f,   0.0f, 1.0f, 0.0f,   1.0f, 1.0f,	// bottom right
+		-0.8f, -0.8f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 1.0f,	// bottom left
+		-0.8f,  0.8f, 0.0f,   1.0f, 1.0f, 0.0f,   0.0f, 0.0f	// top left 
 	};
+
 	unsigned int indices[] = {
-		0, 1, 3, // first triangle
-		1, 2, 3  // second triangle
+		0, 1, 3,
+		1, 2, 3
 	};
+
 	unsigned int VBO, VAO, EBO;
 	glGenVertexArrays(1, &VAO);
 	glGenBuffers(1, &VBO);
@@ -556,116 +559,105 @@ void main() {
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
-	// position attribute
+	// Position attribute
 	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
 	glEnableVertexAttribArray(0);
-	// color attribute
+
+	// Color attribute
 	glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
 	glEnableVertexAttribArray(1);
-	// texture coord attribute
+	
+	// Texture coord attribute
 	glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
 	glEnableVertexAttribArray(2);
 
 	unsigned int texture;
-	//generate the texture ID
+	// Generate the texture ID
 	glGenTextures(1, &texture);
-	//binnding the texture
 	glBindTexture(GL_TEXTURE_2D, texture);
-	//regular sampler params
+	
+	// regular sampler params
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	//need to set GL_NEAREST
-	//(not GL_NEAREST_MIPMAP_* which would cause CL_INVALID_GL_OBJECT later)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	//specify texture dimensions, format etc
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, image_width, image_height, 0, GL_RGBA, GL_FLOAT, 0);
 
-	// initialise OpenCL
-	std::cout << "Initialise OpenCL...\n" << std::endl;
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, IMAGEWIDTH, IMAGEHEIGHT, 0, GL_RGBA, GL_FLOAT, 0);
+
+	// Initialise OpenCL
+	std::cout << "Initialise OpenCL ...\n" << std::endl;
 
 	initOpenCL();
+
 	cl_int err = CL_SUCCESS;
 
 	// Create buffers on the OpenCL device for the image and the scene
+	gpuOutput = new cl_float4[IMAGEWIDTH * IMAGEHEIGHT];
 
-	output = new cl_float4[image_width * image_height];
-
-	for (int i = 0; i < image_width * image_height; i++) {
-		output[i] = float4(0.0, 0.0, 0.0, 0.0);
+	for (int i = 0; i < IMAGEWIDTH * IMAGEHEIGHT; i++) {
+		gpuOutput[i] = float4(0.0, 0.0, 0.0, 0.0);
 	}
 
-	streamTable = Buffer(context, CL_MEM_READ_WRITE, image_width * image_height * sizeof(cl_long));
-	ray_buffer = Buffer(context, CL_MEM_READ_WRITE, image_width * image_height * sizeof(ray_info));
-	gpu_output = clCreateBuffer(context(), CL_MEM_USE_HOST_PTR, image_width * image_height * sizeof(cl_float4), output, &err);
-	//gpu_output = clCreateFromGLTexture(context(), CL_MEM_READ_WRITE, GL_TEXTURE_2D, 0, texture, &err);
-	std::cout << "err : " << err << std::endl;
-	triangleBuffer = Buffer(context, CL_MEM_READ_ONLY, triangle_size * sizeof(cl_Triangle));
-	treeBuffer = Buffer(context, CL_MEM_READ_ONLY, BVH_size * sizeof(cl_BVH));
-	atomicBuffer = Buffer(context, CL_MEM_READ_WRITE, sizeof(cl_int));
+	queueBuffer		= Buffer(context, CL_MEM_READ_WRITE, IMAGEWIDTH * IMAGEHEIGHT * sizeof(cl_long));
+	rayBuffer		= Buffer(context, CL_MEM_READ_WRITE, IMAGEWIDTH * IMAGEHEIGHT * sizeof(ray_info));
+	triangleBuffer	= Buffer(context, CL_MEM_READ_ONLY, triangle_size * sizeof(cl_Triangle));
+	treeBuffer		= Buffer(context, CL_MEM_READ_ONLY, BVH_size * sizeof(cl_BVH));
+	atomicBuffer	= Buffer(context, CL_MEM_READ_WRITE, sizeof(cl_int));
+	outputBuffer	= clCreateBuffer(context(), CL_MEM_USE_HOST_PTR, IMAGEWIDTH * IMAGEHEIGHT * sizeof(cl_float4), gpuOutput, &err);
+	//outputBuffer	= clCreateFromGLTexture(context(), CL_MEM_READ_WRITE, GL_TEXTURE_2D, 0, texture, &err);
 
-	// initialise scene
-
+	// Initialise scenes
 	std::map<std::string, Material> material;
-	std::cout << "Loading mtl" << std::endl;
+	std::cout << "Loading mtl ..." << std::endl;
 	material = matLoader("../scene/box_4.mtl");
-	//material = matLoader("../scene/bathroom.mtl");
-	//material = matLoader("../scene/test1.mtl");
-
-	std::cout << std::endl;
 
 	std::vector<Triangle> triangles;
-	std::cout << "Loading obj" << std::endl;
-	bool res = objLoader("../scene/box_4.obj", triangles, material);
-	//bool res = objLoader("../scene/bathroom.obj", triangles, material);
-	//bool res = objLoader("../scene/test1.obj", triangles, material);
+	std::cout << "Loading obj ..." << std::endl;
+	std::cout << "Load scene "  << objLoader("../scene/box_4.obj", triangles, material) ? "success" : "failed";
 
-	BVHTree bt;
-
-	bt.buildBVHTree(triangles);
-	initBVHstruct(bt);
+	BVHTree tree;
+	tree.buildBVHTree(triangles);
+	
+	initBVHstruct(tree);
 	initTriSturct(triangles);
 
+	// Setup clBuffers
 	queue.enqueueWriteBuffer(treeBuffer, CL_TRUE, 0, BVH_size * sizeof(cl_BVH), cl_BVHTree);
 	queue.enqueueWriteBuffer(triangleBuffer, CL_TRUE, 0, triangle_size * sizeof(cl_Triangle), cl_triangles);
 	queue.finish();
-	// every pixel in the image has its own thread or "work item",
-	// so the total amount of work items equals the number of pixels
-	std::size_t global_work_size = image_width * image_height;
+	
+	// Every pixel in the image has its own thread or "work item",
+	//	so the total amount of work items equals to the number of pixels
+	std::size_t global_work_size = IMAGEWIDTH * IMAGEHEIGHT;
 
 	std::size_t local_work_size = 64;
 	std::cout << "Kernel work group size: " << local_work_size << std::endl;
 
+	// Ensure the global work size is a multiple of local work size
 	if (global_work_size % local_work_size != 0)
 		global_work_size = (global_work_size / local_work_size + 1) * local_work_size;
 
-	// Ensure the global work size is a multiple of local work size
+	std::cout << "Rendering start ..." << std::endl;
 
-	std::cout << "Rendering started..." << std::endl;
-
-	double START, END;
-	START = clock();
-	double tt;
+	double startTime, endTime;
+	startTime = clock();
+	double duringTime;
 
 	while (!glfwWindowShouldClose(window)) {
 
 		// ray initial-------------------------------
-
-		initial.setArg(0, ray_buffer);
-		initial.setArg(1, gpu_output);
-		initial.setArg(2, streamTable);
+		initial.setArg(0, rayBuffer);
+		initial.setArg(1, outputBuffer);
+		initial.setArg(2, queueBuffer);
 		initial.setArg(3, atomicBuffer);
 
-		queue.enqueueNDRangeKernel(initial, NULL, image_width * image_height, local_work_size, NULL, NULL);
-
+		queue.enqueueNDRangeKernel(initial, NULL, IMAGEWIDTH * IMAGEHEIGHT, local_work_size, NULL, NULL);
 		queue.enqueueReadBuffer(atomicBuffer, CL_TRUE, 0, sizeof(cl_int), streamCounter);
 
 		while (true) {
-
 			processInput(window);
 
 			// ray generation-------------------------------
-
 			std::random_device rd; 
 			std::default_random_engine generator(rd()); 
 			std::uniform_real_distribution<cl_float> random_float(0.0001f, 0.001f); 
@@ -674,21 +666,19 @@ void main() {
 			float rngx = random_float(generator) - 0.5;
 			float rngy = random_float(generator) - 0.5;
 
-			generation.setArg(0, ray_buffer);
-			generation.setArg(1, streamTable);
+			generation.setArg(0, rayBuffer);
+			generation.setArg(1, queueBuffer);
 			generation.setArg(2, atomicBuffer);
 			generation.setArg(3, rngx);
 			generation.setArg(4, rngy);
 			generation.setArg(5, triangleBuffer);
 			
-			queue.enqueueNDRangeKernel(generation, NULL, image_width * image_height, local_work_size, NULL, NULL);
-
+			queue.enqueueNDRangeKernel(generation, NULL, IMAGEWIDTH * IMAGEHEIGHT, local_work_size, NULL, NULL);
 			queue.enqueueReadBuffer(atomicBuffer, CL_TRUE, 0, sizeof(cl_int), streamCounter);
 
 			int NDCounter = 0;
 			int modND = 0;
 			
-
 			for (int i = 0; i < BOUNCE; i++) {
 
 				queue.enqueueReadBuffer(atomicBuffer, CL_TRUE, 0, sizeof(cl_int), streamCounter);
@@ -716,9 +706,9 @@ void main() {
 
 				traversal.setArg(0, triangleBuffer);
 				traversal.setArg(1, treeBuffer);
-				traversal.setArg(2, streamTable);
+				traversal.setArg(2, queueBuffer);
 				traversal.setArg(3, NDCounter);
-				traversal.setArg(4, ray_buffer);
+				traversal.setArg(4, rayBuffer);
 
 				queue.enqueueNDRangeKernel(traversal, NULL, modND, local_work_size, NULL, NULL);
 				//queue.finish();
@@ -729,10 +719,10 @@ void main() {
 				std::uniform_real_distribution<cl_float> random_float_01(0.0f, 1.0f);
 
 				rendering.setArg(0, triangleBuffer);
-				rendering.setArg(1, ray_buffer);
-				rendering.setArg(2, streamTable);
+				rendering.setArg(1, rayBuffer);
+				rendering.setArg(2, queueBuffer);
 				rendering.setArg(3, atomicBuffer);
-				rendering.setArg(4, gpu_output);
+				rendering.setArg(4, outputBuffer);
 				rendering.setArg(5, rng);
 				rendering.setArg(6, NDCounter);
 
@@ -744,28 +734,24 @@ void main() {
 				queue.enqueueReadBuffer(atomicBuffer, CL_TRUE, 0, sizeof(cl_int), streamCounter);
 
 				//queue.finish();
-
 			}
 
-			cl_event event;
-			//cl_int result = queue.enqueueReadBuffer(gpu_output, CL_TRUE, 0, sizeof(cl_float4), output);
-			cl_int result = clEnqueueReadBuffer(queue(), gpu_output, CL_TRUE, 0, image_width * image_height * sizeof(cl_float4), output, 0, NULL, NULL);
+			//cl_int result = queue.enqueueReadBuffer(outputBuffer, CL_TRUE, 0, sizeof(cl_float4), output);
+			cl_int result = clEnqueueReadBuffer(queue(), outputBuffer, CL_TRUE, 0, IMAGEWIDTH * IMAGEHEIGHT * sizeof(cl_float4), gpuOutput, 0, NULL, NULL);
 			//queue.finish();
 
 			//std::cout << "Rendering done! \nCopying output from device to host" << std::endl;
 			
-			
-			//for (int j = 0; j < image_width * image_height; j++) {
-			//	output[j] = { gpu_output[j], gpu_output[j].s[1], gpu_output[j].s[2], gpu_output[j].s[3]};
+			//for (int j = 0; j < IMAGEWIDTH * IMAGEHEIGHT; j++) {
+			//	output[j] = { outputBuffer[j], outputBuffer[j].s[1], outputBuffer[j].s[2], outputBuffer[j].s[3]};
 			//}
 			
-
 			glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
 			glClear(GL_COLOR_BUFFER_BIT);
 
 			glActiveTexture(GL_TEXTURE0);
 			glBindTexture(GL_TEXTURE_2D, texture);
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, image_width, image_height, 0, GL_RGBA, GL_FLOAT, output);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, IMAGEWIDTH, IMAGEHEIGHT, 0, GL_RGBA, GL_FLOAT, gpuOutput);
 			
 			shader.use();
 			glBindVertexArray(VAO); 
@@ -783,19 +769,17 @@ void main() {
 			
 		}
 
-		END = clock();
-		tt = (END - START);
+		endTime = clock();
+		duringTime = (endTime - endTime);
 
 		//printf("%f\n", tt);
 
-		
 		/*
-		for (int j = 0; j < image_width * image_height; j++) {
-			output[j] = { gpu_output[j].s[0], gpu_output[j].s[1], gpu_output[j].s[2], gpu_output[j].s[3] };
+		for (int j = 0; j < IMAGEWIDTH * IMAGEHEIGHT; j++) {
+			output[j] = { outputBuffer[j].s[0], outputBuffer[j].s[1], outputBuffer[j].s[2], outputBuffer[j].s[3] };
 		}
 		*/
 		
-
 		//std::cout << "loop time " << SAMPLE << std::endl;
 		
 		break;
@@ -808,5 +792,4 @@ void main() {
 	std::cout << "Saved image to 'opencl_raytracer.ppm'" << std::endl;
 
 	//system("PAUSE");
-
 }
