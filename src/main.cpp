@@ -4,7 +4,7 @@
 #include <glad\glad.h> 
 #include <GLFW\glfw3.h>
 
-#include <CL\cl.hpp>
+#include <CL\cl2.hpp>
 
 #include <iostream>
 #include <fstream>

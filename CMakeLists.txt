@@ -1,43 +1,52 @@
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.15)
 
 set(NAME OpenCLPathTracer)
-set(CMAKE_PREFIX_PATH "C:/source/vcpkg/installed/x64-windows")
-
 project(${NAME})
 
-find_package(OpenCL 2.2 REQUIRED)
-find_path(GLAD_INCLUDE_DIR glad/glad.h)
-find_path(GLFW3_INCLUDE_DIR GLFW/glfw3.h)
-find_library(GLAD_LIBRARY glad)
-find_library(GLFW3_LIBRARY glfw3)
-find_library(GLFW3DLL_LIBRARY glfw3dll)
-
+# Specify the C++ standard
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-include_directories(${OpenCL_INCLUDE_DIR})
-include_directories(${GLAD_INCLUDE_DIR})
-include_directories(${GLFW3_INCLUDE_DIR})
+# Use the vcpkg toolchain file if available
+if(DEFINED ENV{VCPKG_ROOT})
+    set(CMAKE_PREFIX_PATH "$ENV{VCPKG_ROOT}\\installed\\x64-windows")
+else()
+	message("VCPKG_ROOT is not defined")
+endif()
 
-link_directories(${OpenCL_LIBRARY})
-link_directories(${GLAD_LIBRARY})
-link_directories(${GLFW3_LIBRARY})
-link_directories(${GLFW3DLL_LIBRARY})
+# Find required packages
+find_package(OpenCL REQUIRED)
+find_package(glad REQUIRED)
+find_package(glfw3 REQUIRED)
 
-file(GLOB src
-     "*.h"
-     "*.cpp"
-     "./kernel/*.cl"
-     "./shader/*.*"
-)   
+# Collect all source and header files
+file(GLOB SOURCES "src/*.cpp")
+file(GLOB HEADERS "include/*.h")
 
-add_executable(${NAME} ${src})
+# Collect all kernels and shader files
+file(GLOB OPENCL_FILES "kernel/*.cl")
+file(GLOB SHADER_FILES "shader/*.vs" "shader/*.fs")
 
-target_link_libraries(${NAME} 
-	PRIVATE
-		${OpenCL_LIBRARY}
+source_group("kernels" FILES ${OPENCL_FILES})
+source_group("shaders" FILES ${SHADER_FILES})
+
+# Add executable with source and header files
+add_executable(${NAME} ${SOURCES} ${HEADERS} ${OPENCL_FILES} ${SHADER_FILES})
+
+# Link libraries
+target_link_libraries(${NAME}
+    PRIVATE
+        OpenCL::OpenCL
 		opengl32
-		${GLAD_LIBRARY}
-		${GLFW3_LIBRARY}
-		${GLFW3DLL_LIBRARY}
+        glad::glad
+        glfw
 )
 
+# Include directories
+target_include_directories(${NAME}
+    PRIVATE
+		${OpenCL_INCLUDE_DIR}
+        ${GLAD_INCLUDE_DIR}
+        ${GLFW_INCLUDE_DIR}
+        include
+)
